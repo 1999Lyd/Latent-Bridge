@@ -48,7 +48,8 @@ Latent-Bridge/
 │   │   ├── collect_pi0_kv_data.py       # Step 1: Collect KV + embedding data
 │   │   ├── train_pi0_bridge_kv.py       # Step 2: Train KV bridge
 │   │   ├── eval_pi0_bridge_kv.py        # Step 3: Evaluate
-│   │   ├── generate_pi0_dagger_kv.py    # Optional: DAgger data generation
+│   │   ├── generate_pi0_dagger_kv.py    # Optional: Generate DAgger data offline
+│   │   ├── collect_pi0_dagger_kv_online.py  # Optional: Online DAgger collection
 │   │   └── run_pipeline.sh              # End-to-end pipeline
 │   └── baselines/                  # Baseline comparisons
 │       ├── eval_fastv_baseline.py       # FastV token pruning
