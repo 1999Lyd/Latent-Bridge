@@ -2,7 +2,7 @@
 
 **Latent Bridge: Feature Delta Prediction for Efficient Dual-System Vision-Language-Action Model Inference**
 
-[Paper (NeurIPS 2026)](docs/neurips_draft/neurips_2026.pdf) | [Checkpoints](#checkpoints)
+[Paper (NeurIPS 2026)](docs/neurips_draft/neurips_2026.pdf) | [Checkpoints](https://drive.google.com/drive/folders/1oRtVNAnVUvV52AFCYJ6jwn8qUkAx7Fz_?usp=sharing)
 
 ## Overview
 
@@ -92,13 +92,13 @@ Download pre-trained bridge checkpoints:
 
 | Model | Suite | Bridge Type | SR (Sync) | SR (Bridge) | Retention | Download |
 |-------|-------|-------------|-----------|-------------|-----------|----------|
-| pi0.5 | LIBERO-Spatial | KV Bridge | 98.7% | 99.0% | 100.3% | [link](#) |
-| pi0.5 | LIBERO-Object | KV Bridge | 98.3% | 99.0% | 100.7% | [link](#) |
-| pi0.5 | LIBERO-Goal | KV Bridge | 97.0% | 97.0% | 100.0% | [link](#) |
-| pi0.5 | LIBERO-10 | KV Bridge | 94.0% | 92.0% | 97.9% | [link](#) |
-| GR00T | LIBERO-Goal | Feature Bridge | 97.5% | 95.0% | 97.4% | [link](#) |
+| pi0.5 | LIBERO-Spatial | KV Bridge | 98.7% | 99.0% | 100.3% | [link](https://drive.google.com/drive/folders/1oRtVNAnVUvV52AFCYJ6jwn8qUkAx7Fz_?usp=sharing) |
+| pi0.5 | LIBERO-Object | KV Bridge | 98.3% | 99.0% | 100.7% | [link](https://drive.google.com/drive/folders/1oRtVNAnVUvV52AFCYJ6jwn8qUkAx7Fz_?usp=sharing) |
+| pi0.5 | LIBERO-Goal | KV Bridge | 97.0% | 97.0% | 100.0% | [link](https://drive.google.com/drive/folders/1oRtVNAnVUvV52AFCYJ6jwn8qUkAx7Fz_?usp=sharing) |
+| pi0.5 | LIBERO-10 | KV Bridge | 94.0% | 92.0% | 97.9% | [link](https://drive.google.com/drive/folders/1oRtVNAnVUvV52AFCYJ6jwn8qUkAx7Fz_?usp=sharing) |
+| GR00T | LIBERO-Goal | Feature Bridge | 97.5% | 95.0% | 97.4% | [link](https://drive.google.com/drive/folders/1oRtVNAnVUvV52AFCYJ6jwn8qUkAx7Fz_?usp=sharing) |
 
-All checkpoints: [qcvla_checkpoints.tar.gz](#) (4.0 GB)
+All checkpoints: [Google Drive](https://drive.google.com/drive/folders/1oRtVNAnVUvV52AFCYJ6jwn8qUkAx7Fz_?usp=sharing) (4.0 GB)
 
 ## Quick Start
 
