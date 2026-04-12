@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+outputs/
+outputs
+*.h5
+*.hdf5
+*.tar.gz
+*.zip
+
+# Logs
+*.log
+nohup.out
+
+# Checkpoints (download separately)
+checkpoints/
+*.pt
+*.pth
+*.safetensors
+*.bin
+!requirements*.txt
+
+# Large dependencies (install separately)
+baseline/openpi/.venv/
+baseline/openpi/data/
+benchmarks/Isaac-GR00T/external_dependencies/
+
+# Claude workspace
+.claude/
+
+# Configs with local paths
+configs/local/

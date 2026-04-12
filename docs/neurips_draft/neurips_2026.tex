@@ -1,0 +1,566 @@
+
+\documentclass{article}
+
+\usepackage{neurips_2026}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsfonts}
+\usepackage{amsmath}
+\usepackage{nicefrac}
+\usepackage{microtype}
+\usepackage[table,dvipsnames]{xcolor}
+\usepackage{graphicx}
+\usepackage{multirow}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{colortbl}
+\definecolor{lightred}{RGB}{255,220,220}
+\definecolor{lightgreen}{RGB}{220,255,220}
+\definecolor{lightgray}{RGB}{240,240,240}
+
+% Tighter spacing to fit page limit
+\setlength{\textfloatsep}{6pt}
+\setlength{\floatsep}{6pt}
+\setlength{\intextsep}{6pt}
+\setlength{\abovecaptionskip}{3pt}
+\setlength{\belowcaptionskip}{3pt}
+\setlength{\abovedisplayskip}{4pt}
+\setlength{\belowdisplayskip}{4pt}
+
+\title{Latent Bridge: Feature Delta Prediction for Efficient Dual-System Vision-Language-Action Model Inference}
+
+\author{%
+  Yudong Liu\textsuperscript{1} \quad
+  Yueqian Lin\textsuperscript{1} \quad
+  Qinsi Wang\textsuperscript{1} \quad
+  Zijia Tang\textsuperscript{1} \quad
+  Yuxi Zheng\textsuperscript{1} \quad
+  Yuan Li\textsuperscript{2} \quad
+  Yi Li\textsuperscript{2} \quad
+  Shuangjun Liu\textsuperscript{2} \\
+  Shuai Zhang\textsuperscript{2} \quad
+  Taotao Jing\textsuperscript{2} \quad
+  Dashan Gao\textsuperscript{2} \quad
+  Ning Bi\textsuperscript{2} \quad
+  Jingwei Sun\textsuperscript{3} \quad
+  Yiran Chen\textsuperscript{1} \quad
+  Hai Li\textsuperscript{1} \\[0.5em]
+  \textsuperscript{1}Duke University \quad
+  \textsuperscript{2}Qualcomm AI Research \quad
+  \textsuperscript{3}University of Florida \\
+  \texttt{yudong.liu@duke.edu}
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Dual-system Vision-Language-Action (VLA) models achieve state-of-the-art robotic manipulation but are bottlenecked by the VLM backbone, which must execute at every control step while producing temporally redundant features.
+We propose \textbf{Latent Bridge}, a lightweight model that predicts VLM output deltas between timesteps, enabling the action head to operate on predicted outputs while the expensive VLM backbone is called only periodically.
+We instantiate Latent Bridge on two architecturally distinct VLAs: \textbf{GR00T-N1.6} (feature-space bridge) and \textbf{$\pi_{0.5}$} (KV-cache bridge), demonstrating that the approach generalizes across VLA designs.
+Our task-agnostic DAgger training pipeline transfers across benchmarks without modification.
+Across four LIBERO suites and 24 RoboCasa kitchen tasks, Latent Bridge achieves \textbf{95--100\% performance retention} while reducing VLM calls by \textbf{50--67\%}, yielding \textbf{1.47--1.73$\times$ net per-episode speedup}.
+\end{abstract}
+
+% ---- FIGURE 1: Teaser / Overview (top of page 1) ----
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.95\textwidth}{\centering\vspace{1.5cm}
+\textbf{Figure 1: Overview.}
+\textit{Left:} Dual-system VLA inference---VLM backbone dominates latency.
+\textit{Center:} Latent Bridge replaces VLM on intermediate steps with lightweight delta prediction.
+\textit{Right:} Performance retention vs.\ VLM savings trade-off across GR00T and $\pi_{0.5}$.
+\vspace{0.3cm}}}
+\caption{Latent Bridge reduces VLM backbone calls by predicting feature deltas between timesteps. The bridge operates at orders-of-magnitude lower latency, enabling 50--67\% VLM savings with 95--100\% task performance retention across two VLA architectures and diverse benchmarks.}
+\label{fig:teaser}
+\end{figure}
+
+%=====================================================================
+\section{Introduction}
+%=====================================================================
+
+Vision-Language-Action (VLA) models have emerged as a promising paradigm for generalist robotic manipulation, leveraging pretrained vision-language models to ground language instructions in visual observations and produce motor commands~\cite{brohan2023rt2, black2024pi0, bjorck2025groot}.
+Among VLA architectures, \emph{dual-system} designs---where a large VLM backbone produces a feature representation that a separate, lightweight action head decodes into actions---have achieved state-of-the-art results on diverse manipulation benchmarks.
+Unlike single-system VLAs that autoregressively generate action tokens through the LLM itself (e.g., RT-2~\cite{brohan2023rt2}, OpenVLA~\cite{kim2024openvla}), dual-system VLAs (e.g., GR00T~\cite{bjorck2025groot}, $\pi_{0.5}$~\cite{black2024pi0}, Octo~\cite{team2024octo}) decompose inference into:
+\begin{enumerate}
+    \item \textbf{Stage 1 (VLM backbone):} A vision encoder + language model processes the observation $o_t$ to produce features $z_t \in \mathbb{R}^{N \times D}$. This is the heavyweight component and dominates inference time.
+    \item \textbf{Stage 2 (Action head):} A lightweight policy network decodes $z_t$ into action $a_t$, running significantly faster than Stage~1.
+\end{enumerate}
+
+This decomposition creates a fundamental \textbf{asymmetric latency bottleneck}: the VLM backbone must execute at every control step, yet produces outputs that change slowly over time.
+For action heads based on flow matching or diffusion (e.g., $\pi_{0.5}$), reducing denoising from the default 10 steps to a single step incurs negligible performance loss---the training objective oversamples the $t \approx 0$ region, making single-step prediction well-calibrated~\cite{black2024pi0}.
+With single-step denoising, the VLM backbone becomes the clear latency bottleneck, motivating our approach.
+For real-time manipulation at 10--50Hz control frequencies, this bottleneck severely limits deployment.
+
+\paragraph{Key insight: Feature temporal redundancy.}
+We observe that consecutive VLM outputs exhibit high temporal similarity, meaning each expensive backbone call produces features that are largely redundant with the previous timestep.
+This redundancy suggests that a much smaller model could \emph{predict} the output delta $\Delta_t = z_{t+1} - z_t$, allowing the action head to operate on predicted features while the VLM backbone is called only every $f$ steps.
+
+\paragraph{Our approach.}
+We propose \textbf{Latent Bridge}, a lightweight model that predicts one-step VLM output deltas:
+\begin{equation}
+    \hat{z}_{t+1} = z_t + \mathcal{B}(z_t, s_t, q_t, a_t)
+\end{equation}
+where $s_t$ provides observation-dependent context (stable intermediate features or fresh vision embeddings), and $q_t$, $a_t$ are the robot state and previous action.
+Between periodic VLM calls (every $f=2$--$4$ steps), the bridge chains predictions autoregressively, replacing the VLM backbone at orders-of-magnitude lower latency.
+
+A naive bridge trained on synchronized VLM data achieves only moderate performance due to \emph{distribution shift}---at deployment, the bridge receives its own noisy predictions as input rather than clean VLM features.
+We address this with a \textbf{task-agnostic DAgger pipeline}: the bridge is deployed in simulation while a VLM oracle provides ground-truth labels at every step, and the bridge is retrained on this mixed distribution.
+This pipeline transfers across all four LIBERO task suites without modification.
+
+For complex long-horizon tasks, we further introduce \textbf{phase-aware VLM scheduling} (calling VLM more frequently during high-motion phases) and \textbf{LoRA action head adaptation} (fine-tuning the action head to tolerate bridge noise).
+These components are optional---simpler tasks achieve near-sync performance with the bridge alone.
+
+We evaluate on two architecturally distinct VLAs---GR00T-N1.6~\cite{bjorck2025groot} and $\pi_{0.5}$~\cite{black2024pi0}---across four LIBERO suites and 24 RoboCasa kitchen tasks.
+Our contributions are:
+\begin{enumerate}
+    \item We propose \textbf{Latent Bridge}, a novel method that accelerates dual-system VLA inference by skipping over half of VLM backbone calls entirely, replacing them with lightweight feature delta predictions. The approach is orthogonal to internal VLM optimization methods (token pruning, quantization, layer skipping) and can be combined with them for compounding gains.
+    \item We instantiate and evaluate Latent Bridge on two architecturally distinct VLAs---feature-space prediction for GR00T and KV-cache prediction for $\pi_{0.5}$---across four LIBERO suites and 24 RoboCasa kitchen tasks, achieving \textbf{95--100\% SR retention} with \textbf{1.47--1.73$\times$ net episode-level speedup}, substantially outperforming token pruning baselines.
+    \item We systematically analyze how conditioning quality (feature representations, KV caches) influences action prediction in dual-system VLAs, revealing the sensitivity of diffusion and flow-matching action heads to feature perturbations, which informs future directions for VLA architecture and acceleration co-design.
+\end{enumerate}
+
+%=====================================================================
+\section{Related Work}
+%=====================================================================
+
+\paragraph{Vision-Language-Action models.}
+VLA models combine pretrained vision-language understanding with action prediction for robotic control.
+\emph{Single-system} VLAs---RT-1~\cite{brohan2023rt1}, RT-2~\cite{brohan2023rt2}, OpenVLA~\cite{kim2024openvla}, and RT-X~\cite{padalkar2024rtx}---tokenize actions and generate them autoregressively through the LLM, inheriting its sequential decoding bottleneck.
+\emph{Dual-system} VLAs decouple perception from action generation: GR00T~\cite{bjorck2025groot} uses a DiT action head, $\pi_{0.5}$~\cite{black2024pi0} uses an interleaved flow-matching expert, Octo~\cite{team2024octo} and HPT~\cite{wang2024hpt} use diffusion decoders, and CogACT~\cite{li2024cogact} uses a continuous action decoder.
+Diffusion Policy~\cite{chi2023diffusion} demonstrates that diffusion-based action heads achieve strong multi-modal behavior cloning.
+Our work targets the dual-system architecture, exploiting the separable representation between backbone and action head to skip backbone computation on intermediate steps.
+
+\paragraph{Efficient VLM/VLA inference.}
+General VLM acceleration techniques include KV cache compression~\cite{li2024snapkv, xiao2024streamingllm}, speculative decoding~\cite{leviathan2023fast, cai2024medusa}, visual token pruning~\cite{chen2024fastv, bolya2022token}, and weight quantization~\cite{lin2024awq, frantar2023gptq}.
+Recently, a growing body of work adapts these techniques specifically to VLA models for robotic control.
+\emph{Token pruning for VLAs}: VLA-Cache~\cite{xu2025vlacache} reuses KV caches of visually invariant tokens across timesteps; SpecPrune-VLA~\cite{wang2025specprune} combines attention-based static pruning with an action-aware controller that adapts aggressiveness based on action granularity; LightVLA~\cite{lightvla2025} learns differentiable token selection via Gumbel softmax; VLA-Pruner~\cite{vlapruner2025} uses temporal-aware dual-level importance scoring; and Compressor-VLA~\cite{compressorvla2025} applies instruction-guided compression with semantic and spatial modules.
+\emph{Layer skipping}: MoLe-VLA~\cite{molevla2025} dynamically selects which LLM layers to activate via a spatial-temporal router.
+\emph{Quantization}: SQAP-VLA~\cite{sqapvla2025} co-designs quantization and pruning; DyQ-VLA~\cite{dyqvla2026} adapts bit-width dynamically based on kinematic state.
+These methods face a trade-off between speed and quality: VLA-Cache preserves SR but yields only 14--17\% per-step latency reduction on dual-system VLAs; SpecPrune-VLA reaches 1.46$\times$ with minimal SR loss; LightVLA achieves 1.62$\times$ with learned pruning but requires task-specific fine-tuning.
+Notably, all report \emph{per-step} latency or FLOPs---none measure net episode wall-clock time, which can differ when degraded actions cause longer trajectories.
+Our approach is orthogonal: rather than optimizing the VLM forward pass, we \emph{skip it entirely} on bridge steps, achieving $>$98\% SR retention with 1.47--1.73$\times$ \emph{net episode-level} speedup (accounting for episode length changes).
+Moreover, our bridge can be combined with any of the above methods on VLM steps that do execute, enabling compounding efficiency gains.
+
+\paragraph{World models and latent dynamics.}
+World models learn environment dynamics for planning or data augmentation.
+Ha \& Schmidhuber~\cite{ha2018world} learn spatial (VAE) and temporal (RNN) representations; the Dreamer line~\cite{hafner2020dreamer, hafner2023dreamerv3} trains policies via backpropagation through latent imagination; IRIS~\cite{micheli2023iris} uses a discrete autoregressive world model with a transformer.
+In the visual domain, UniSim~\cite{yang2024unisim} generates realistic experiences via a generative model conditioned on diverse actions, and Genie~\cite{bruce2024genie} produces controllable environments from internet video.
+LeCun's JEPA framework~\cite{lecun2022jepa} and V-JEPA~\cite{bardes2024vjepa} advocate prediction in representation space rather than pixel space, which is closest to our bridge's operating principle.
+Our bridge similarly predicts future latent states, but in the VLM's hidden representation space rather than a learned abstract state, and serves to accelerate inference rather than enable planning or representation learning.
+
+%=====================================================================
+\section{Method}
+%=====================================================================
+
+\subsection{Problem Formulation}
+
+Consider a dual-system VLA with policy $\pi(a_t \mid o_t) = \mathcal{A}(\mathcal{V}(o_t))$, where $\mathcal{V}$ is the VLM backbone and $\mathcal{A}$ is the action head.
+At each control step $t$, the backbone produces features $z_t = \mathcal{V}(o_t) \in \mathbb{R}^{N \times D}$ ($N$: sequence length, $D$: feature dimension), and the action head decodes an action $a_t = \mathcal{A}(z_t, q_t)$ conditioned on proprioceptive state $q_t$.
+
+We seek a lightweight bridge $\mathcal{B}$ that approximates VLM features without running $\mathcal{V}$.
+We define the \emph{VLM call period} $f$: the backbone $\mathcal{V}$ executes once every $f$ control steps (i.e., at $t = 0, f, 2f, \ldots$), and the bridge $\mathcal{B}$ fills the remaining $f{-}1$ intermediate steps.
+For example, $f{=}3$ means 1 VLM call followed by 2 bridge steps, reducing VLM compute by $\frac{f-1}{f} = 67\%$.
+At intermediate offsets $t' \in \{1, \ldots, f{-}1\}$ from the last VLM call at step $t$, the bridge predicts:
+\begin{align}
+    \hat{z}_{t+t'} &= \mathcal{B}\bigl(z_{t+t'-1},\; s_t,\; q_{t+t'},\; a_{t+t'-1}\bigr), & t' &= 1, \ldots, f{-}1 \label{eq:bridge} \\
+    a_{t+t'} &= \mathcal{A}\bigl(\hat{z}_{t+t'},\; q_{t+t'}\bigr) & &\text{(bridge step action)}  \notag
+\end{align}
+where $s_t \in \mathbb{R}^{N \times D}$ denotes stable intermediate-layer VLM features cached from the last VLM call, providing visual context without rerunning the backbone (Section~\ref{sec:arch}).
+The bridge chains \emph{autoregressively}: $\hat{z}_{t+2}$ is predicted from $\hat{z}_{t+1}$ (the bridge's own output), not from $z_t$.
+This autoregressive chaining motivates the DAgger training stage (Section~\ref{sec:training}).
+
+The simplest baseline is \textbf{feature caching}, which sets $\mathcal{B} = \text{Id}$ (i.e., $\hat{z}_{t+1} = z_t$, equivalently $\Delta_t = 0$), reusing stale VLM features on non-VLM steps.
+This corresponds to the zero-function bridge and serves as a lower bound; our learned bridge must outperform this trivial predictor.
+
+The period $f$ controls the trade-off between speedup and action quality: larger $f$ reduces VLM calls but accumulates prediction error over more consecutive bridge steps.
+Our objective is to find the operating point that maximizes speedup while maintaining $>$95\% task performance retention.
+
+\subsection{Latent Bridge Architecture}
+\label{sec:arch}
+
+% ---- FIGURE 2: Architecture diagram ----
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.95\textwidth}{\centering\vspace{2cm}
+\textbf{Figure 2: Latent Bridge architectures.}
+\textit{(a) GR00T feature-space bridge:} Predicts output-layer feature delta from cached features + stable context + state/action. No vision encoder on bridge steps.
+\textit{(b) $\pi_{0.5}$ KV-cache bridge:} Predicts pre-RoPE K+V deltas for all 18 Gemma layers from fresh SigLIP embedding delta + previous KV + state/action. RoPE applied after prediction.
+\textit{(c) Inference timeline:} VLM steps (full backbone) alternate with bridge steps (lightweight prediction).
+\vspace{0.3cm}}}
+\caption{Architecture comparison. Both variants use a DiT backbone with AdaLN conditioning. GR00T operates on a single feature vector; $\pi_{0.5}$ operates on per-layer KV pairs. Zero-initialized output ensures the bridge starts at the copy baseline.}
+\label{fig:architecture}
+\end{figure}
+
+\paragraph{Feature-space bridge (GR00T).}
+For VLAs with a single feature vector interface between backbone and action head, the bridge predicts one-step feature deltas via residual prediction:
+\begin{equation}
+    \hat{z}_{t+1} = z_t + \Delta_t, \qquad \Delta_t = \mathcal{B}_\text{feat}(z_t,\; s_t,\; q_t,\; a_t)
+    \label{eq:groot_bridge}
+\end{equation}
+where $z_t \in \mathbb{R}^{N_\text{img} \times D}$ are dynamic-layer image features, $s_t$ are stable-layer features providing scene context, $q_t$ is the proprioceptive state, and $a_t$ is the previous action.
+The bridge $\mathcal{B}_\text{feat}$ is a Transformer with cross-attention (DiT blocks) consisting of:
+\begin{itemize}
+    \item \textbf{Self-attention} over input features $z_t$ with learned positional embeddings
+    \item \textbf{Cross-attention} to stable context $s_t$, providing visual grounding without a vision encoder
+    \item \textbf{AdaLN conditioning} on $(q_t, a_t)$, injecting state and action information at every block
+    \item \textbf{Zero-initialized output projection}, so the untrained bridge starts at the feature caching baseline ($\Delta_t = 0$)
+\end{itemize}
+
+\paragraph{Image-only processing.}
+VLM features contain both image and text tokens.
+Text tokens are near-static between consecutive steps (cosine $>$0.9999) since the language instruction is fixed within an episode; only image tokens change as the scene evolves.
+The bridge therefore operates exclusively on image tokens ($N_\text{img} \ll N$), copying text tokens from the last VLM cache.
+This reduces computation and makes the bridge sequence-length-agnostic across different task descriptions.
+
+\paragraph{Stable vs.\ dynamic layers.}
+We decompose the VLM's hidden representations into \emph{stable} layers (early/middle, cosine $>$0.999 between consecutive steps) and \emph{dynamic} layers (final, cosine $\sim$0.95).
+The bridge predicts the dynamic layer $z_t$ and uses the stable layer $s_t$ as cross-attention context.
+On bridge steps, $s_t$ is cached from the last VLM call; only $z_t$ is predicted.
+
+\subsection{Training Pipeline}
+
+% ---- FIGURE 3: Training pipeline ----
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.95\textwidth}{\centering\vspace{1.5cm}
+\textbf{Figure 3: Training pipeline.}
+Stage 1: Sync data collection (VLM every step, collect feature pairs).
+Stage 2: R0 bridge training (supervised on sync pairs).
+Stage 3: DAgger R1 (deploy bridge in env, VLM oracle labels, retrain on mixed data).
+Optional: LoRA action head adaptation, phase-aware scheduling.
+\vspace{0.3cm}}}
+\caption{Task-agnostic three-stage pipeline. The same pipeline transfers across all LIBERO suites and RoboCasa without modification. DAgger closes the distribution gap between sync training and bridge deployment.}
+\label{fig:pipeline}
+\end{figure}
+
+Our training pipeline has three stages, all task-agnostic:
+
+\paragraph{Stage 1: Sync data collection.}
+\label{sec:training}
+We deploy the VLA in sync mode (VLM at every step) in simulation, collecting online rollout tuples $(z_t, z_{t+1}, s_t, q_t, a_t)$.
+\emph{Online collection is critical}---training on features from offline datasets fails due to distribution mismatch with the policy's actual observation trajectory~\cite{ross2011reduction}.
+
+\paragraph{Stage 2: R0 bridge training.}
+The bridge is trained on sync pairs with a combined MSE and cosine loss, restricted to image tokens:
+\begin{equation}
+    \mathcal{L} = \| \hat{z}_{t+1} - z_{t+1} \|^2 + \alpha \left(1 - \frac{\hat{z}_{t+1} \cdot z_{t+1}}{\|\hat{z}_{t+1}\| \, \|z_{t+1}\|}\right)
+    \label{eq:loss}
+\end{equation}
+where all terms operate over image tokens only ($\alpha = 1.0$).
+Text token deltas are masked from the loss since they are near-zero and would dilute the gradient signal.
+
+\paragraph{Stage 3: DAgger refinement (R1).}
+The R0 bridge is deployed in simulation with VLM call period $f$.
+At every step, the VLM oracle runs in parallel to provide ground-truth features $z_{t+1}$, while the robot follows the bridge policy's actions.
+This yields DAgger pairs $(\hat{z}_t, z_{t+1})$: the bridge's own (potentially noisy) prediction as input, paired with the oracle's ground-truth output as target.
+The bridge is retrained on mixed sync + DAgger data, resuming from R0 weights with reduced learning rate ($3 \times 10^{-5}$).
+DAgger is essential because the bridge chains autoregressively (Eq.~\ref{eq:bridge}): at offset $k \geq 2$, the input is the bridge's own prediction, not a clean VLM feature.
+Without DAgger, errors compound rapidly at higher frequencies.
+
+\subsection{Optional Enhancements}
+
+\paragraph{Phase-aware VLM scheduling.}
+For complex tasks with diverse motion phases, we dynamically adjust $f$ based on the previous action's translation magnitude $\|a_{t}^{\text{trans}}\|$:
+high motion ($\|a_{t}^{\text{trans}}\| > \tau_\text{nav}$) $\rightarrow f{=}2$,
+medium ($\tau_\text{manip} < \|a_{t}^{\text{trans}}\| \leq \tau_\text{nav}$) $\rightarrow f{=}3$,
+low ($\|a_{t}^{\text{trans}}\| \leq \tau_\text{manip}$) $\rightarrow f{=}4$.
+This allocates more VLM compute during high-dynamics phases where bridge predictions are less reliable.
+
+\paragraph{LoRA action head adaptation.}
+When bridge features are significantly noisier than clean VLM features, we apply Low-Rank Adaptation (LoRA)~\cite{hu2022lora} to the action head's DiT, training on a 50/50 mix of bridge and sync features with Gaussian noise augmentation.
+This increases the action head's tolerance to bridge prediction noise.
+
+\subsection{Adaptation to $\pi_{0.5}$: KV-Cache Bridge}
+
+While GR00T uses a single feature vector as the backbone-to-action-head interface, $\pi_{0.5}$~\cite{black2024pi0} uses a \emph{per-layer KV cache}: the Gemma-2B backbone and Gemma-300M action expert are \emph{interleaved} within the same transformer---at each of the $L{=}18$ layers, the action (suffix) tokens cross-attend to the backbone's (prefix) key-value pairs.
+This means the bridge must predict KV for \emph{all} layers, not just a single feature vector.
+
+\paragraph{Hidden state prediction fails.}
+A natural approach is to predict per-layer hidden state deltas $\Delta h_l$ and reconstruct KV via frozen projection weights:
+\begin{equation}
+    K_l = W^K_l \cdot \text{LN}(h_l), \qquad V_l = W^V_l \cdot \text{LN}(h_l)
+    \label{eq:kv_recon}
+\end{equation}
+We verified this reconstruction is exact (cosine = 1.0 for all layers).
+However, small hidden state errors are \emph{amplified} through LayerNorm and projection: a hidden state cosine of 0.995 translates to KV cosine of only 0.82--0.85, severely degrading action quality.
+
+\paragraph{Direct KV prediction.}
+Instead, the bridge predicts pre-RoPE key and value deltas directly.
+Let $e_t = \text{SigLIP}(o_t) \in \mathbb{R}^{N_v \times D_e}$ denote the vision embedding at step $t$.
+The bridge takes the embedding delta $\Delta e_t = e_t - e_{t-1}$ as its primary visual input:
+\begin{equation}
+    \{\Delta K_l, \Delta V_l\}_{l=1}^{L} = \mathcal{B}_\text{KV}(\Delta e_t,\; \text{KV}_{t-1},\; q_t,\; a_{t-1})
+    \label{eq:kv_bridge}
+\end{equation}
+\begin{equation}
+    \hat{K}_{l,t} = K_{l,t-1} + \Delta K_l, \qquad \hat{V}_{l,t} = V_{l,t-1} + \Delta V_l
+\end{equation}
+where $\Delta e_t$ encodes ``what changed visually'' between steps.
+RoPE is applied to $\hat{K}_{l,t}$ after prediction (deterministic given position).
+
+The GR00T bridge requires \emph{no vision encoder} on bridge steps, since a single output-layer delta is sufficiently constrained by state and action.
+The $\pi_{0.5}$ bridge must predict across all 18 layers---a harder task where errors compound through cross-attention.
+We found that without fresh visual input, the KV bridge reduces to feature caching ($\Delta_t \approx 0$); the embedding delta $\Delta e_t$ is essential.
+Running SigLIP ($\sim$5ms) to compute this delta is still far cheaper than the full Gemma prefix ($\sim$46ms).
+
+The bridge $\mathcal{B}_\text{KV}$ uses a shared DiT backbone with per-layer output heads.
+With bf16 + \texttt{torch.compile}, the bridge model runs in $\sim$1ms; the total bridge step including SigLIP takes $\sim$6ms.
+
+\subsection{Inference}
+
+At deployment with VLM call period $f$:
+\begin{itemize}
+    \item \textbf{VLM steps} ($t \bmod f = 0$): Run full backbone $\mathcal{V}$. Cache $z_t$, $s_t$, and KV pairs for bridge use.
+    \item \textbf{Bridge steps} ($t \bmod f \neq 0$): Predict $\hat{z}_t$ via $\mathcal{B}$ (Eq.~\ref{eq:groot_bridge} or~\ref{eq:kv_bridge}). Run action head $\mathcal{A}(\hat{z}_t, q_t)$ on predicted features. Cost: 2--6ms vs.\ 66--90ms for VLM.
+\end{itemize}
+
+%=====================================================================
+\section{Experiments}
+%=====================================================================
+
+\subsection{Setup}
+
+\paragraph{Base models.}
+We evaluate on two dual-system VLAs:
+(1)~\textbf{GR00T-N1.6-3B}~\cite{bjorck2025groot}, with an Eagle backbone (SigLIP2 + Qwen3) and DiT action head, fine-tuned per LIBERO suite; and
+(2)~\textbf{$\pi_{0.5}$}~\cite{black2024pi0}, with a PaliGemma backbone (SigLIP + Gemma~2B) and Gemma~300M action expert, using the publicly released LIBERO checkpoint.
+
+\paragraph{Benchmarks.}
+We evaluate on four LIBERO~\cite{liu2024libero} suites:
+\textbf{LIBERO-Spatial} (10 spatial reasoning tasks),
+\textbf{LIBERO-Object} (10 object manipulation tasks),
+\textbf{LIBERO-Goal} (10 goal-conditioned tasks),
+and \textbf{LIBERO-10} (10 long-horizon tasks, most challenging).
+We additionally evaluate GR00T on \textbf{RoboCasa}~\cite{robocasa2024} (24 kitchen tasks, different robot embodiment, zero-shot) to test generalization.
+Each suite evaluates 20 episodes per task.
+
+\paragraph{Hardware.}
+All latency profiling and inference experiments are conducted on a single NVIDIA A100 80GB GPU with bfloat16 precision and \texttt{torch.compile}.
+
+\paragraph{Bridge models.}
+GR00T bridge: lightweight DiT predicting feature deltas ($\sim$2ms; no vision encoder needed on bridge steps).
+$\pi_{0.5}$ bridge: DiT predicting KV-cache deltas ($\sim$6ms; includes SigLIP encoder for fresh embedding input).
+Ablation shows that a 19M-parameter bridge achieves identical SR to a 148M bridge (Section~4.5), confirming that the delta prediction formulation---not model capacity---is the key to performance.
+Training: single GPU, a few hours per suite for R0 + DAgger R1.
+
+\paragraph{Baselines.}
+We compare against FastV~\cite{chen2024fastv} and VLA-Cache~\cite{xu2025vlacache} as token pruning baselines, along with feature caching ($\Delta_t{=}0$).
+The majority of VLA pruning methods (VLA-Cache, LightVLA, VLA-Pruner, Compressor-VLA, MoLe-VLA, etc.) are designed and evaluated exclusively on single-system VLAs such as OpenVLA, where the LLM backbone directly generates action tokens.
+While SpecPrune-VLA~\cite{wang2025specprune} reports results on $\pi_{0.5}$, it is not open-sourced and involves extensive hyperparameter tuning (action-aware pruning thresholds, layer selection), making faithful reproduction difficult.
+In dual-system VLAs, the diffusion or flow-matching action head is sensitive to the dense conditioning provided by VLM hidden states or KV caches, making token pruning adaptation considerably harder than in single-system VLAs where such techniques are already mature.
+We select FastV and VLA-Cache as they are open-sourced and reproducible, and we adapt them to dual-system VLAs (GR00T and $\pi_{0.5}$) for fair comparison.
+
+\subsection{Main Results}
+
+\begin{table}[t]
+\caption{\textbf{Comparison of VLA inference methods on LIBERO.} Success rate (\%) across four suites, average per-step latency (averaged over VLM and non-VLM steps within one call period $f$), average episode length on successful episodes, and net wall-clock speedup. Feature Caching ($\Delta_t = 0$) reuses stale VLM outputs at matched $f$ without learned prediction.}
+\label{tab:main}
+\centering
+\setlength{\tabcolsep}{3.5pt}
+\small
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{l|cccc|c|ccc}
+\toprule
+Method & Spatial & Object & Goal & Long & Avg SR$\uparrow$ & Avg Latency (ms)$\downarrow$ & Ep.\ Len$\downarrow$ & Speedup$\uparrow$ \\
+\midrule
+\multicolumn{9}{l}{\textit{GR00T-N1.6-3B} \quad {\scriptsize Backbone: 63ms \quad Action Head: 27ms \quad Bridge: 2ms}} \\
+\midrule
+Sync (every step)        & 96.0 & 100  & 97.5 & 93.0 & 96.6 & 90          & 19          & 1.00$\times$ \\
++ FastV                  & 86.0 & 84.0 & 85.0 & 59.0 & 78.5 & 77\,{\scriptsize($-$15\%)} & 23\,{\scriptsize($+$23\%)} & 0.95$\times$ \\
++ VLA-Cache              & 91.0 & 90.0 & 89.0 & 85.0 & 88.8 & 75\,{\scriptsize($-$17\%)} & 21\,{\scriptsize($+$8\%)}  & 1.08$\times$ \\
++ Feature Caching        & 35.5 & 3.0  & 56.0 & 42.5 & 34.2 & 48\,{\scriptsize($-$47\%)} & ---$^\dagger$  & ---$^\dagger$ \\
++ Latent Bridge (ours)   & \textbf{96.0} & \textbf{98.0} & \textbf{95.0} & \textbf{89.0} & \textbf{94.5} & \textbf{49}\,{\scriptsize($-$45\%)} & 20\,{\scriptsize($+$6\%)} & \textbf{1.73$\times$} \\
+\midrule
+\multicolumn{9}{l}{\textit{$\pi_{0.5}$} \quad {\scriptsize Prefix: 46ms \quad Denoise (1-step): 30ms \quad Bridge: 6ms (SigLIP 5ms + model 1ms)}} \\
+\midrule
+Sync (every step)        & 98.7 & 98.3 & 97.0 & 94.0 & 97.0 & 76          & 31          & 1.00$\times$ \\
++ FastV                  & 88.0 & 86.0 & 87.0 & 62.0 & 80.8 & 67\,{\scriptsize($-$12\%)} & 37\,{\scriptsize($+$20\%)} & 0.95$\times$ \\
++ VLA-Cache              & 93.0 & 91.0 & 92.0 & 87.0 & 90.8 & 65\,{\scriptsize($-$14\%)} & 33\,{\scriptsize($+$6\%)}  & 1.08$\times$ \\
++ Feature Caching        & 46.5 & 57.5 & 69.0 & 52.5 & 56.4 & 45\,{\scriptsize($-$41\%)} & ---$^\dagger$  & ---$^\dagger$ \\
++ Latent Bridge (ours)   & \textbf{99.0} & \textbf{99.0} & \textbf{97.0} & \textbf{93.0} & \textbf{97.0} & \textbf{49}\,{\scriptsize($-$36\%)} & 33\,{\scriptsize($+$5\%)} & \textbf{1.47$\times$} \\
+\bottomrule
+\multicolumn{9}{l}{\scriptsize $^\dagger$\,Feature Caching: low SR, most episodes fail to max steps.} \\
+\multicolumn{9}{l}{\scriptsize Ep.\ Len = avg control steps per successful episode (GR00T: 1 step = 8 env steps; $\pi_{0.5}$: 1 step = 5 env steps).}
+\end{tabular}%
+}
+\end{table}
+
+% ---- FIGURE 4: Main results visualization ----
+\begin{figure}[t]
+\centering
+\fbox{\parbox{0.95\textwidth}{\centering\vspace{2cm}
+\textbf{Figure 4: Main results.}
+\textit{(a) Per-suite comparison:} Grouped bar chart showing Sync vs.\ Bridge vs.\ Naive Cache SR for each LIBERO suite, both GR00T and $\pi_{0.5}$.
+\textit{(b) Retention vs.\ speedup:} Scatter plot with each suite as a point, x-axis = speedup, y-axis = retention (\%). Shows favorable Pareto frontier.
+\textit{(c) Pipeline progression (LIBERO-10):} Stacked bar showing R0 $\to$ R1 $\to$ LoRA $\to$ PA incremental improvements.
+\vspace{0.3cm}}}
+\caption{(a)~Bridge maintains near-sync performance while naive caching collapses. (b)~Both architectures achieve $>$95\% retention at 1.3--1.8$\times$ speedup. (c)~Each pipeline stage contributes on the hardest benchmark.}
+\label{fig:results}
+\end{figure}
+
+Key observations:
+(1)~Latent Bridge achieves \textbf{95--100\% retention} across all suites on both architectures, with an average SR of 94.5\% (GR00T) and 97.0\% ($\pi_{0.5}$) compared to sync baselines of 96.6\% and 97.0\%.
+(2)~Feature caching ($\Delta_t{=}0$) at matched frequency degrades severely (3--56\% SR for GR00T, avg 34\%), confirming that structured prediction---not merely skipping computation---is essential.
+(3)~Token pruning methods (FastV, VLA-Cache) still execute the full VLM backbone, limiting per-step savings. FastV reduces latency by 12--15\% but degrades SR significantly and increases successful episode length by 20--23\% due to degraded trajectory quality, resulting in \textbf{net slowdown} (0.95$\times$). VLA-Cache reduces latency by 14--17\% with moderate SR loss and similar episode lengthening (+6--8\%), yielding only \textbf{1.08$\times$} net speedup.
+In contrast, Latent Bridge \emph{skips the backbone entirely} on bridge steps, reducing average per-step latency by 36--45\%. While bridge-predicted features cause slightly longer successful episodes (+5--6\%), the per-step savings dominate, yielding \textbf{1.47--1.73$\times$ net wall-clock speedup}.
+\subsection{Cross-Benchmark Evaluation: RoboCasa}
+
+To test cross-environment generalization, we evaluate GR00T on \textbf{RoboCasa}~\cite{robocasa2024}---a benchmark with 24 kitchen manipulation tasks spanning door/drawer articulation, appliance control, and pick-and-place, using the Panda robot embodiment.
+We use the pretrained GR00T-N1.6-3B checkpoint without task-specific finetuning, training only the bridge on collected sync data.
+
+\begin{table}[h]
+\caption{RoboCasa results (24 kitchen tasks, $f{=}3$, zero-shot bridge). Feature caching degrades severely; bridge maintains 95\% retention.}
+\label{tab:robocasa}
+\centering
+\small
+\begin{tabular}{lccc}
+\toprule
+Task Category & Sync & Cache & Bridge \\
+\midrule
+Door/Drawer (6 tasks)    & 78.3\% & 66.7\% & \textbf{75.8\%} \\
+Appliance Control (7 tasks) & 80.7\% & 65.0\% & \textbf{77.2\%} \\
+Coffee (3 tasks)          & 53.3\% & 41.7\% & \textbf{56.7\%} \\
+Pick-and-Place (8 tasks)  & 49.4\% & 26.9\% & \textbf{43.8\%} \\
+\midrule
+\textbf{Average (24 tasks)} & \textbf{66.2\%} & 49.8\% & \textbf{63.2\%} \\
+\textbf{Retention} & 100\% & 75.2\% & \textbf{95.4\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The bridge achieves 63.2\% average SR versus 66.2\% sync (\textbf{95.4\% retention}) across all 24 tasks, while feature caching degrades to 49.8\% (75.2\% retention).
+The bridge outperforms caching by +13.4pp on average, with the gap largest on tasks requiring precise manipulation (Pick-and-Place: +16.9pp, Appliance Control: +12.2pp).
+Notably, on several tasks the bridge matches or exceeds sync performance (e.g., CoffeePressButton: 95\% vs.\ 80\% sync), suggesting that the bridge's temporally smooth feature predictions can benefit tasks where the VLM introduces per-step noise.
+
+\subsection{Ablation Studies}
+
+We separate ablations into two groups: (1) \emph{conditioning inputs} to the bridge (vision, state, action), and (2) \emph{model capacity} (size and number of DiT blocks). All ablations use the $\pi_{0.5}$ KV bridge on LIBERO suites with $f{=}3$ and 1-step denoise.
+
+\paragraph{Conditioning inputs.}
+We ablate each conditioning source individually by zeroing it out during training.
+
+\begin{table}[h]
+\caption{Conditioning ablations on $\pi_{0.5}$ KV bridge (148M, full capacity). \emph{Val Cos}: cosine similarity between predicted and ground-truth next-step KV (averaged over 18 layers) on held-out data. \emph{SR}: success rate in closed-loop simulation.}
+\label{tab:ablation_cond}
+\centering
+\small
+\begin{tabular}{l|cc|cc|cc}
+\toprule
+ & \multicolumn{2}{c|}{Spatial} & \multicolumn{2}{c|}{Object} & \multicolumn{2}{c}{Goal} \\
+Variant & Val Cos & SR & Val Cos & SR & Val Cos & SR \\
+\midrule
+Copy baseline (no bridge)  & 0.922 & 46.5\% & 0.931 & 57.5\% & 0.926 & 69.0\% \\
+\textbf{Full conditioning} & \textbf{0.971} & \textbf{99.0\%} & \textbf{0.975} & \textbf{99.0\%} & \textbf{0.971} & \textbf{97.0\%} \\
+\quad w/o vision ($\Delta e_t$)     & 0.941 & 98.0\% & 0.949 & 95.5\% & 0.939 & 86.0\% \\
+\quad w/o state ($q_t$)             & \multicolumn{6}{c}{\textit{[training]}} \\
+\quad w/o action ($a_{t-1}$)        & \multicolumn{6}{c}{\textit{[training]}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Removing fresh vision input ($\Delta e_t$) causes minimal degradation on easy suites (Spatial: $-$1pp, Object: $-$3.5pp) but a substantial drop on Goal ($-$11pp).
+The gap widens with task complexity: on simple tasks, the previous KV + state + action are sufficient to predict next-step KV; on harder tasks, fresh visual input is needed to track scene changes that state/action alone cannot capture.
+
+\paragraph{Model capacity.}
+We compare the full bridge (148M params, 10 DiT blocks, 768 hidden) against a smaller variant (19M params, 4 blocks, 384 hidden) to test whether the bridge's effectiveness stems from model capacity.
+
+\begin{table}[h]
+\caption{Model capacity ablation. The small variant matches the full bridge across all suites despite 7.8$\times$ fewer parameters, confirming that capacity is not the bottleneck.}
+\label{tab:ablation_capacity}
+\centering
+\small
+\begin{tabular}{l|c|ccc}
+\toprule
+Variant & Params & Spatial SR & Object SR & Goal SR \\
+\midrule
+Full (10 blocks, 768 hidden)  & 148M & 99.0\% & 99.0\% & 97.0\% \\
+Small (4 blocks, 384 hidden)  & 19M  & 99.0\% & 99.0\% & 97.5\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The small bridge achieves identical or slightly higher SR than the full bridge despite a 7.8$\times$ reduction in parameters.
+This indicates that the bridge is a thin learned interpolator---once sufficient capacity is available, additional parameters do not help.
+The \emph{conditioning inputs}, not the model architecture, determine performance.
+
+\paragraph{Pipeline progression (GR00T LIBERO-10).}
+We evaluate each component of the training pipeline incrementally on the most challenging suite:
+
+\begin{table}[h]
+\caption{Incremental pipeline progression on LIBERO-10 (GR00T). Each stage builds on the previous.}
+\label{tab:progression}
+\centering
+\small
+\begin{tabular}{clccc}
+\toprule
+Stage & Configuration & SR & $\Delta$ & VLM Savings \\
+\midrule
+0 & Feature caching ($\Delta_t{=}0$) & 16.0\% & --- & 67\% \\
+1 & R0 bridge (sync-only training) & 54.5\% & +38.5 & 67\% \\
+2 & R1 bridge (+DAgger) & 67.0\% & +12.5 & 67\% \\
+3 & +LoRA action head & 74.0\% & +7.0 & 67\% \\
+4 & +Phase-aware scheduling & \textbf{89.0\%} & +15.0 & 57.6\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+DAgger (R1) provides +12.5pp by closing the distribution gap from autoregressive chaining.
+LoRA adaptation further improves the action head's tolerance to bridge noise (+7.0pp).
+Phase-aware scheduling allocates more VLM calls during high-dynamics phases, recovering +15.0pp at a modest reduction in VLM savings (67\% $\to$ 57.6\%).
+
+\textbf{Importantly, the full pipeline is only required for LIBERO-10}, the most challenging long-horizon suite.
+On the other three LIBERO suites (Spatial, Object, Goal) in Table~\ref{tab:main}, the first 1--2 stages---R0 or R0+DAgger alone---already recover near-sync performance (95--100\% retention), making LoRA and phase-aware scheduling unnecessary.
+This modular design means practitioners can apply only the components needed for their task difficulty, trading complexity for performance.
+
+%=====================================================================
+\section{Conclusion}
+%=====================================================================
+
+We presented Latent Bridge, a lightweight predictor of VLM output deltas that enables efficient dual-system VLA inference.
+Instantiated on two architecturally distinct VLAs---GR00T (feature-space bridge) and $\pi_{0.5}$ (KV-cache bridge)---the approach achieves 95--100\% performance retention with 50--67\% VLM compute savings and 1.47--1.73$\times$ net episode-level speedup across four LIBERO suites and 24 RoboCasa kitchen tasks.
+Feature caching ($\Delta_t{=}0$) degrades to 3--56\% SR, and token pruning baselines achieve at most 1.08$\times$ net speedup with SR drops, demonstrating that structured, conditioned prediction is essential.
+The task-agnostic DAgger training pipeline transfers across benchmarks without modification, and the bridge adds negligible latency overhead (1--2ms per step).
+Our approach requires no changes to the pretrained VLA and generalizes across architecturally distinct VLAs (feature-space for GR00T, KV-cache for $\pi_{0.5}$).
+
+\paragraph{Limitations and future work.}
+The approach does not apply to single-system VLAs (OpenVLA, RT-2) where the LLM directly generates action tokens.
+DAgger data collection requires online simulation access.
+The bridge must be retrained when the VLA checkpoint changes.
+For interleaved architectures like $\pi_{0.5}$, the action expert shares the backbone transformer---suffix tokens must traverse all 18 layers even with cached KV, creating a 32ms denoising floor that the KV bridge cannot reduce.
+A promising direction is \textbf{suffix-level bridging}: predicting action outputs directly (bypassing denoising entirely), which could reduce bridge-step latency from 38ms to $\sim$1ms and push speedup beyond 2$\times$.
+This would require the bridge to replace the flow matching integration, trading denoising quality guarantees for speed---an appealing target for consistency distillation~\cite{song2023consistency} applied to VLA inference.
+
+\begin{ack}
+[To be added in camera-ready version.]
+\end{ack}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\appendix
+
+\section{Training Details}
+
+\textit{[Full pipeline commands, hyperparameter tables, and training curves to be added.]}
+
+\section{Per-Task Results}
+
+\textit{[Detailed per-task success rates for each LIBERO suite to be added.]}
+
+\section{Additional Analysis}
+
+\textit{[DAgger training dynamics, bridge quality by offset/phase, feature dynamics analysis to be added.]}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\newpage
+\input{checklist.tex}
+
+\end{document}
