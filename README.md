@@ -2,7 +2,7 @@
 
 **Latent Bridge: Feature Delta Prediction for Efficient Dual-System Vision-Language-Action Model Inference**
 
-[Paper (NeurIPS 2026)](docs/neurips_draft/neurips_2026.pdf) | [Checkpoints](https://drive.google.com/drive/folders/1oRtVNAnVUvV52AFCYJ6jwn8qUkAx7Fz_?usp=sharing)
+[Paper](docs/neurips_draft/neurips_2026.pdf) | [Checkpoints](https://drive.google.com/drive/folders/1oRtVNAnVUvV52AFCYJ6jwn8qUkAx7Fz_?usp=sharing)
 
 ## Overview
 
@@ -194,7 +194,6 @@ python scripts/groot/eval_stable_dynamic_bridge.py \
 @inproceedings{liu2026latentbridge,
   title={Latent Bridge: Feature Delta Prediction for Efficient Dual-System Vision-Language-Action Model Inference},
   author={Liu, Yudong and Lin, Yueqian and Wang, Qinsi and Tang, Zijia and Zheng, Yuxi and Li, Yuan and Li, Yi and Liu, Shuangjun and Zhang, Shuai and Jing, Taotao and Gao, Dashan and Bi, Ning and Sun, Jingwei and Chen, Yiran and Li, Hai},
-  booktitle={Advances in Neural Information Processing Systems (NeurIPS)},
   year={2026}
 }
 ```
