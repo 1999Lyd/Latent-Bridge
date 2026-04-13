@@ -171,23 +171,23 @@ python scripts/groot/eval_stable_dynamic_bridge.py \
 
 ## Main Results
 
-### pi0.5 (freq=3, 2-step denoise, bf16+compile)
+### pi0.5 (bf16+compile, 1.47x avg speedup)
 
-| Suite | Sync SR | Bridge SR | Retention | VLM Savings | Speedup |
-|-------|---------|-----------|-----------|-------------|---------|
-| LIBERO-Spatial | 98.7% | 99.0% | 100.3% | 65% | 1.47x |
-| LIBERO-Object | 98.3% | 99.0% | 100.7% | 65% | 1.25x |
-| LIBERO-Goal | 97.0% | 97.0% | 100.0% | 65% | 1.26x |
-| LIBERO-10 | 94.0% | 92.0% | 97.9% | 65% | 1.46x |
+| Suite | Sync SR | Bridge SR | Retention | VLM Savings |
+|-------|---------|-----------|-----------|-------------|
+| LIBERO-Spatial | 98.7% | 99.0% | 100.3% | 65% |
+| LIBERO-Object | 98.3% | 99.0% | 100.7% | 65% |
+| LIBERO-Goal | 97.0% | 97.0% | 100.0% | 65% |
+| LIBERO-10 | 94.0% | 92.0% | 97.9% | 65% |
 
-### GR00T-N1
+### GR00T-N1 (1.73x speedup)
 
-| Suite | Sync SR | Bridge SR | Retention | VLM Savings | Speedup |
-|-------|---------|-----------|-----------|-------------|---------|
-| LIBERO-Spatial | 96.0% | 96.0% | 100.0% | 67% | 1.73x |
-| LIBERO-Object | 100.0% | 98.0% | 98.0% | 67% | 1.73x |
-| LIBERO-Goal | 97.5% | 95.0% | 97.4% | 50% | — |
-| LIBERO-10 | 93.0% | 89.0% | 95.7% | 57.6% | — |
+| Suite | Sync SR | Bridge SR | Retention | VLM Savings |
+|-------|---------|-----------|-----------|-------------|
+| LIBERO-Spatial | 96.0% | 96.0% | 100.0% | 67% |
+| LIBERO-Object | 100.0% | 98.0% | 98.0% | 67% |
+| LIBERO-Goal | 97.5% | 95.0% | 97.4% | 50% |
+| LIBERO-10 | 93.0% | 89.0% | 95.7% | 57.6% |
 
 ## Citation
 
