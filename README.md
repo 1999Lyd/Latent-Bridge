@@ -67,13 +67,12 @@ Latent-Bridge/
 
 ### For GR00T-N1 experiments
 ```bash
-# Clone this repo
 git clone https://github.com/1999Lyd/Latent-Bridge.git
 cd Latent-Bridge
 
-# Install GR00T dependencies (Isaac-GR00T)
-# Follow: https://github.com/NVIDIA/Isaac-GR00T
-pip install -e .
+# Install Isaac-GR00T
+git clone https://github.com/NVIDIA/Isaac-GR00T benchmarks/Isaac-GR00T
+cd benchmarks/Isaac-GR00T && pip install -e . && cd ../..
 
 # Install LIBERO
 pip install libero
@@ -81,11 +80,43 @@ pip install libero
 
 ### For pi0.5 experiments
 ```bash
-# Install OpenPI (pi0.5 inference framework)
-# Follow: https://github.com/Physical-Intelligence/openpi
-cd baseline/openpi
-pip install -e .
+git clone https://github.com/Physical-Intelligence/openpi baseline/openpi
+cd baseline/openpi && pip install -e . && cd ../..
 ```
+
+## Base Model Checkpoints
+
+The bridge must be trained on top of a fine-tuned VLA. Obtain the base models as follows:
+
+### GR00T-N1.6 LIBERO fine-tuned
+
+Fine-tune GR00T-N1.6-3B on each LIBERO suite following [Isaac-GR00T's fine-tuning guide](https://github.com/NVIDIA/Isaac-GR00T/blob/main/getting_started/LIBERO_tutorial.md). Checkpoints should be saved to:
+```
+./checkpoints/groot_libero_spatial/    # fine-tuned on libero_spatial
+./checkpoints/groot_libero_object/     # fine-tuned on libero_object
+./checkpoints/groot_libero_goal/       # fine-tuned on libero_goal
+./checkpoints/groot_libero_10/         # fine-tuned on libero_10
+```
+
+For RoboCasa, use the pretrained GR00T-N1.6-3B directly (no fine-tuning needed).
+
+### π0.5 LIBERO fine-tuned
+
+Download the pretrained π0.5 base weights and fine-tune on LIBERO using [OpenPI's training pipeline](https://github.com/Physical-Intelligence/openpi?tab=readme-ov-file#fine-tuning-base-models-on-your-own-data):
+
+```bash
+# Fine-tune (takes ~6 hours per suite on a single A100)
+cd baseline/openpi
+python scripts/train.py pi05_libero --exp-name pi05_libero --overwrite
+
+# Convert JAX checkpoint to PyTorch (required for our collection/eval scripts)
+python examples/convert_jax_model_to_pytorch.py \
+    --checkpoint-dir ./checkpoints/pi05_libero/pi05_libero/30000 \
+    --config-name pi05_libero \
+    --output-path ./checkpoints/pi05_libero_pytorch
+```
+
+Use the converted PyTorch checkpoint (`--checkpoint_dir ./checkpoints/pi05_libero_pytorch`) for all π0.5 scripts in this repo.
 
 ## Checkpoints
 
