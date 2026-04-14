@@ -10,8 +10,8 @@ Dual-system Vision-Language-Action (VLA) models achieve state-of-the-art robotic
 
 Key results:
 - **95--100% task success retention** across 4 LIBERO suites and 24 RoboCasa tasks
-- **1.47--1.73x inference speedup** on A100 GPU
-- **65--67% VLM compute savings** at frequency 3
+- **1.65--1.73x net per-episode inference speedup** on A100 GPU
+- **50--75% VLM compute savings** 
 - Validated on two VLA architectures: **GR00T-N1** (feature-space) and **pi0.5** (KV-cache)
 
 ## Architecture
