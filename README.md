@@ -2,7 +2,7 @@
 
 **Latent Bridge: Feature Delta Prediction for Efficient Dual-System Vision-Language-Action Model Inference**
 
-[Paper](docs/neurips_draft/neurips_2026.pdf) | [Checkpoints](https://drive.google.com/drive/folders/1oRtVNAnVUvV52AFCYJ6jwn8qUkAx7Fz_?usp=sharing)
+[Checkpoints](https://drive.google.com/drive/folders/1oRtVNAnVUvV52AFCYJ6jwn8qUkAx7Fz_?usp=sharing)
 
 ## Overview
 
@@ -55,7 +55,6 @@ Latent-Bridge/
 │       ├── eval_fastv_baseline.py       # FastV token pruning
 │       ├── eval_specprune_baseline.py   # SpecPrune-VLA
 │       └── eval_vlacache_baseline.py    # VLA-Cache
-└── docs/                           # Paper and documentation
 ```
 
 ## Installation
