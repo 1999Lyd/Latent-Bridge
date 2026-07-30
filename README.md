@@ -10,7 +10,7 @@ Dual-system Vision-Language-Action (VLA) models achieve state-of-the-art robotic
 
 Key results:
 - **95--100% task success retention** across 4 LIBERO suites and 24 RoboCasa tasks
-- **1.65--1.73x net per-episode inference speedup** on A100 GPU
+- **1.55--1.73x net per-episode inference speedup** on A100 GPU (episode-length corrected)
 - **50--75% VLM compute savings** 
 - Validated on two VLA architectures: **GR00T-N1** (feature-space) and **pi0.5** (KV-cache)
 
@@ -201,14 +201,16 @@ python scripts/groot/eval_stable_dynamic_bridge.py \
 
 ## Main Results
 
-### pi0.5 (bf16+compile, 1.47x avg speedup)
+### pi0.5 (bf16+compile, f=4 default, 1.55x net speedup; 3 seeds x 20 eps/task)
 
 | Suite | Sync SR | Bridge SR | Retention | VLM Savings |
 |-------|---------|-----------|-----------|-------------|
-| LIBERO-Spatial | 98.7% | 99.0% | 100.3% | 65% |
-| LIBERO-Object | 98.3% | 99.0% | 100.7% | 65% |
-| LIBERO-Goal | 97.0% | 97.0% | 100.0% | 65% |
-| LIBERO-10 | 94.0% | 92.0% | 97.9% | 65% |
+| LIBERO-Spatial | 98.83% | 99.00% | ~sync | 75% |
+| LIBERO-Object | 98.17% | 97.67% | 99.5% | 75% |
+| LIBERO-Goal | 97.00% | 97.33% | ~sync | 75% |
+| LIBERO-10 | 93.83% | 93.67% | 99.8% | 75% |
+
+Note: an earlier version of this table reported a single-seed f=3 run (1.47x); the numbers above are the paper's 3-seed f=4 protocol. Cells at or above sync are within evaluation noise and marked "~sync".
 
 ### GR00T-N1 (1.73x speedup)
 
@@ -228,6 +230,23 @@ python scripts/groot/eval_stable_dynamic_bridge.py \
   year={2026}
 }
 ```
+
+## Seeds and Statistical Protocol
+
+Main-table numbers are the mean across **3 random seeds x 20 episodes per task** (600 episodes per LIBERO suite; 1440 total for RoboCasa; 150 for ALOHA). Both eval entry points expose the seed:
+
+```bash
+# pi0.5 (seed is an Args field; default 7)
+python scripts/pi0/eval_pi0_bridge_kv.py --seed 0   # repeat with 1, 2
+# GR00T
+python scripts/groot/eval_stable_dynamic_bridge.py --seed 0   # repeat with 1, 2
+```
+
+The fixed seed list used in the paper is `{0, 1, 2}`. Wilson 95% binomial CIs at n=600 have a half-width of ~1.4pp at p~0.97. Single-seed protocols are used only for ablation sweeps.
+
+## Rebuttal Experiments (real-data and action-level evidence)
+
+`rebuttal_experiments/` contains the evaluation scripts behind the real-data and action-level results reported in the paper's revision: real-vs-sim temporal redundancy on DROID, offline R0-only bridge training on real trajectories, per-step action-fidelity replay with seeded flow noise, motion-binned analysis, and the chunk-length study. See `rebuttal_experiments/README.md` for the numbers and per-script usage.
 
 ## License
 

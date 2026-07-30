@@ -2521,7 +2521,12 @@ def main():
                         help="Number of action steps per inference (1 for SimplerEnv, 8 for LIBERO)")
     parser.add_argument("--use_init_states", action="store_true",
                         help="Use fixed init states from LIBERO benchmark for deterministic eval")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="Random seed for numpy/torch and env seeding (multi-seed protocol: 0,1,2)")
     args = parser.parse_args()
+
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
 
     # Import bridge model (only if needed)
     if "bridge" in args.modes or args.offline_eval:
